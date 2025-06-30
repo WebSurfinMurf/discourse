@@ -33,7 +33,10 @@ DC_CONTAINER="discourse"
 PG_IMAGE="postgres:15"
 REDIS_IMAGE="redis:6"
 DC_IMAGE="discourse/discourse:latest"
-HTTP_PORT=3000
+
+# Host-Exposed Ports (override in discourse.env if needed)
+PG_HOST_PORT="${DISCOURSE_DB_HOST_PORT:-5433}"
+HTTP_PORT="${DISCOURSE_HTTP_PORT:-3001}"
 
 # ── Postgres: only create/start if not already running ────────────────
 if docker ps --format '{{.Names}}' | grep -qx "${PG_CONTAINER}"; then
@@ -42,11 +45,12 @@ elif docker ps -a --format '{{.Names}}' | grep -qx "${PG_CONTAINER}"; then
   echo "Postgres '${PG_CONTAINER}' exists but is stopped → starting"
   docker start "${PG_CONTAINER}"
 else
-  echo "Starting Postgres (${PG_IMAGE})…"
+  echo "Starting Postgres (${PG_IMAGE}) on host port ${PG_HOST_PORT}…"
   docker run -d \
     --name "${PG_CONTAINER}" \
     --network "${NETWORK}" \
     --restart unless-stopped \
+    -p "${PG_HOST_PORT}:5432" \
     -v "${PG_VOLUME}":/var/lib/postgresql/data \
     -e POSTGRES_DB="${DISCOURSE_DB}" \
     -e POSTGRES_USER="${DISCOURSE_DB_USER}" \
@@ -92,5 +96,5 @@ docker run -d \
   "${DC_IMAGE}"
 
 echo
-echo "✔️ All set! Discourse is live on HTTP port ${HTTP_PORT}:"
+echo "✔️ All set! Discourse is live on HTTP port ${HTTP_PORT} and Postgres host port ${PG_HOST_PORT}:"
 echo " http://$(hostname -I | awk '{print $1}'):${HTTP_PORT}/"
