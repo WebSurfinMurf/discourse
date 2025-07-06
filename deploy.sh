@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # ==============================================================================
-# Discourse Deployment Script
+# Discourse Deployment Script (Subfolder Configuration)
 # ==============================================================================
 #
 # Description:
-#   This script deploys a Discourse forum using Docker, with separate
-#   containers for Postgres and Redis, and integrates with Traefik.
+#   Deploys Discourse in a subfolder (e.g., /discourse) using Traefik
+#   with a StripPrefix middleware.
 #
 # ==============================================================================
 
@@ -16,15 +16,15 @@ set -euo pipefail
 source "$(dirname "$0")/../secrets/discourse.env"
 
 # ── Infra provisioning ───────────────────────────────────────
-NETWORK="traefik-proxy"
+NETWORK="traefik-proxy" #
 PG_VOLUME="discourse_pg_data"
 REDIS_VOLUME="discourse_redis_data"
 DISCOURSE_VOLUME="discourse_data"
 
 # ensure network exists
 if ! docker network ls --format '{{.Name}}' | grep -qx "${NETWORK}"; then
-  echo "Creating network ${NETWORK}…"
-  docker network create "${NETWORK}"
+  echo "Creating network ${NETWORK}…" #
+  docker network create "${NETWORK}" #
 fi
 
 # ensure volumes exist
@@ -51,12 +51,12 @@ elif docker ps -a --format '{{.Names}}' | grep -qx "${PG_CONTAINER}"; then
   echo "Postgres '${PG_CONTAINER}' exists but is stopped → starting"
   docker start "${PG_CONTAINER}"
 else
-  echo "Starting Postgres (${PG_IMAGE})…"
+  echo "Starting Postgres (${PG_IMAGE})…" #
   docker run -d \
     --name "${PG_CONTAINER}" \
     --network "${NETWORK}" \
     --restart unless-stopped \
-    -v "${PG_VOLUME}":/var/lib/postgresql/data \
+    -v "discourse_pg_data":/var/lib/postgresql/data \
     -e POSTGRES_DB="${POSTGRES_DB}" \
     -e POSTGRES_USER="${POSTGRES_USER}" \
     -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
@@ -75,7 +75,7 @@ else
     --name "${REDIS_CONTAINER}" \
     --network "${NETWORK}" \
     --restart unless-stopped \
-    -v "${REDIS_VOLUME}":/data \
+    -v "discourse_redis_data":/data \
     "${REDIS_IMAGE}"
 fi
 
@@ -85,7 +85,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${DISCOURSE_CONTAINER}"; then
   docker rm -f "${DISCOURSE_CONTAINER}"
 fi
 
-echo "Starting Discourse (${DISCOURSE_IMAGE})..."
+echo "Starting Discourse (${DISCOURSE_IMAGE}) in subfolder..."
 docker run -d \
   --name "${DISCOURSE_CONTAINER}" \
   --network "${NETWORK}" \
@@ -97,6 +97,7 @@ docker run -d \
   -e DISCOURSE_DB_PASSWORD="${POSTGRES_PASSWORD}" \
   -e DISCOURSE_REDIS_HOST="discourse-redis" \
   -e DISCOURSE_HOSTNAME="${DISCOURSE_HOSTNAME}" \
+  -e DISCOURSE_RELATIVE_URL_ROOT="${DISCOURSE_RELATIVE_URL_ROOT}" \
   -e DISCOURSE_DEVELOPER_EMAILS="${DISCOURSE_DEVELOPER_EMAILS}" \
   -e DISCOURSE_SMTP_ADDRESS="${DISCOURSE_SMTP_ADDRESS}" \
   -e DISCOURSE_SMTP_PORT="${DISCOURSE_SMTP_PORT}" \
@@ -105,13 +106,16 @@ docker run -d \
   -e DISCOURSE_SMTP_ENABLE_START_TLS=true \
   --label "traefik.enable=true" \
   --label "traefik.docker.network=traefik-proxy" \
-  --label "traefik.http.routers.discourse-secure.rule=Host(\`${DISCOURSE_HOSTNAME}\`)" \
+  --label "traefik.http.routers.discourse-secure.rule=Host(\`${DISCOURSE_HOSTNAME}\`) && PathPrefix(\`${DISCOURSE_RELATIVE_URL_ROOT}\`)" \
   --label "traefik.http.routers.discourse-secure.entrypoints=websecure" \
   --label "traefik.http.routers.discourse-secure.tls=true" \
   --label "traefik.http.routers.discourse-secure.tls.certresolver=letsencrypt" \
+  --label "traefik.http.routers.discourse-secure.service=discourse-service" \
+  --label "traefik.http.middlewares.discourse-stripprefix.stripprefix.prefixes=${DISCOURSE_RELATIVE_URL_ROOT}" \
+  --label "traefik.http.routers.discourse-secure.middlewares=discourse-stripprefix" \
   --label "traefik.http.services.discourse-service.loadbalancer.server.port=3000" \
   "${DISCOURSE_IMAGE}"
 
 echo
 echo "✔️ All set! Discourse is being managed by Traefik."
-echo "   Access it at: https://${DISCOURSE_HOSTNAME}"
+echo "   Access it at: https://${DISCOURSE_HOSTNAME}${DISCOURSE_RELATIVE_URL_ROOT}"
