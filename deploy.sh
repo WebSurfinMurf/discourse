@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Load secrets ────────────────────────────────────────────────────────
-#AI: source project-specific env after pipeline.env loads
+# ==============================================================================
+# Discourse Deployment Script
+# ==============================================================================
+#
+# Description:
+#   This script deploys a Discourse forum using Docker, with separate
+#   containers for Postgres and Redis, and integrates with Traefik.
+#
+# ==============================================================================
+
+
+# ── Load secrets ──────────────────────────────────────────────
 source "$(dirname "$0")/../secrets/discourse.env"
 
-# ── Infra provisioning ─────────────────────────────────────────────────
-NETWORK="discourse-net"
+# ── Infra provisioning ───────────────────────────────────────
+NETWORK="traefik-proxy"
 PG_VOLUME="discourse_pg_data"
 REDIS_VOLUME="discourse_redis_data"
-DC_VOLUME="discourse_data"
-PLUGIN_VOLUME="discourse_plugins"
+DISCOURSE_VOLUME="discourse_data"
 
 # ensure network exists
 if ! docker network ls --format '{{.Name}}' | grep -qx "${NETWORK}"; then
@@ -19,46 +28,42 @@ if ! docker network ls --format '{{.Name}}' | grep -qx "${NETWORK}"; then
 fi
 
 # ensure volumes exist
-for vol in "${PG_VOLUME}" "${REDIS_VOLUME}" "${DC_VOLUME}" "${PLUGIN_VOLUME}"; do
+for vol in "${PG_VOLUME}" "${REDIS_VOLUME}" "${DISCOURSE_VOLUME}"; do
   if ! docker volume ls --format '{{.Name}}' | grep -qx "${vol}"; then
     echo "Creating volume ${vol}…"
     docker volume create "${vol}"
   fi
 done
 
-# ── Docker settings ───────────────────────────────────────────────────
+# ── Docker settings ──────────────────────────────────────────
 PG_CONTAINER="discourse-postgres"
 REDIS_CONTAINER="discourse-redis"
-DC_CONTAINER="discourse"
+DISCOURSE_CONTAINER="discourse"
 PG_IMAGE="postgres:15"
-REDIS_IMAGE="redis:6"
-DC_IMAGE="discourse/discourse:latest"
+REDIS_IMAGE="redis:7-alpine"
+DISCOURSE_IMAGE="discourse/discourse:latest"
 
-# Host-Exposed Ports (override in discourse.env if needed)
-PG_HOST_PORT="${DISCOURSE_DB_HOST_PORT:-5433}"
-HTTP_PORT="${DISCOURSE_HTTP_PORT:-3001}"
 
-# ── Postgres: only create/start if not already running ────────────────
+# ── Postgres: only create/start if not already running ────────
 if docker ps --format '{{.Names}}' | grep -qx "${PG_CONTAINER}"; then
   echo "Postgres '${PG_CONTAINER}' is already running → skipping"
 elif docker ps -a --format '{{.Names}}' | grep -qx "${PG_CONTAINER}"; then
   echo "Postgres '${PG_CONTAINER}' exists but is stopped → starting"
   docker start "${PG_CONTAINER}"
 else
-  echo "Starting Postgres (${PG_IMAGE}) on host port ${PG_HOST_PORT}…"
+  echo "Starting Postgres (${PG_IMAGE})…"
   docker run -d \
     --name "${PG_CONTAINER}" \
     --network "${NETWORK}" \
     --restart unless-stopped \
-    -p "${PG_HOST_PORT}:5432" \
     -v "${PG_VOLUME}":/var/lib/postgresql/data \
-    -e POSTGRES_DB="${DISCOURSE_DB}" \
-    -e POSTGRES_USER="${DISCOURSE_DB_USER}" \
-    -e POSTGRES_PASSWORD="${DISCOURSE_DB_PASS}" \
+    -e POSTGRES_DB="${POSTGRES_DB}" \
+    -e POSTGRES_USER="${POSTGRES_USER}" \
+    -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
     "${PG_IMAGE}"
 fi
 
-# ── Redis: only create/start if not already running ───────────────────
+# ── Redis: only create/start if not already running ───────────
 if docker ps --format '{{.Names}}' | grep -qx "${REDIS_CONTAINER}"; then
   echo "Redis '${REDIS_CONTAINER}' is already running → skipping"
 elif docker ps -a --format '{{.Names}}' | grep -qx "${REDIS_CONTAINER}"; then
@@ -74,27 +79,39 @@ else
     "${REDIS_IMAGE}"
 fi
 
-# ── Discourse: always remove & re-deploy ───────────────────────────────
-if docker ps -a --format '{{.Names}}' | grep -qx "${DC_CONTAINER}"; then
-  echo "Removing existing Discourse container '${DC_CONTAINER}'…"
-  docker rm -f "${DC_CONTAINER}"
+# ── Discourse: always remove & re-deploy ──────────────────────
+if docker ps -a --format '{{.Names}}' | grep -qx "${DISCOURSE_CONTAINER}"; then
+  echo "Removing existing Discourse container '${DISCOURSE_CONTAINER}'…"
+  docker rm -f "${DISCOURSE_CONTAINER}"
 fi
 
-echo "Starting Discourse (${DC_IMAGE})…"
+echo "Starting Discourse (${DISCOURSE_IMAGE})..."
 docker run -d \
-  --name "${DC_CONTAINER}" \
+  --name "${DISCOURSE_CONTAINER}" \
   --network "${NETWORK}" \
   --restart unless-stopped \
-  -p "${HTTP_PORT}:3000" \
-  -v "${DC_VOLUME}":/var/www/discourse/public/uploads \
-  -v "${PLUGIN_VOLUME}":/var/www/discourse/plugins \
-  -e DISCOURSE_DB_HOST="${PG_CONTAINER}" \
-  -e DISCOURSE_DB_NAME="${DISCOURSE_DB}" \
-  -e DISCOURSE_DB_USERNAME="${DISCOURSE_DB_USER}" \
-  -e DISCOURSE_DB_PASSWORD="${DISCOURSE_DB_PASS}" \
-  -e DISCOURSE_REDIS_HOST="${REDIS_CONTAINER}" \
-  "${DC_IMAGE}"
+  -v "${DISCOURSE_VOLUME}":/shared/standalone \
+  -e DISCOURSE_DB_HOST="discourse-postgres" \
+  -e DISCOURSE_DB_NAME="${POSTGRES_DB}" \
+  -e DISCOURSE_DB_USERNAME="${POSTGRES_USER}" \
+  -e DISCOURSE_DB_PASSWORD="${POSTGRES_PASSWORD}" \
+  -e DISCOURSE_REDIS_HOST="discourse-redis" \
+  -e DISCOURSE_HOSTNAME="${DISCOURSE_HOSTNAME}" \
+  -e DISCOURSE_DEVELOPER_EMAILS="${DISCOURSE_DEVELOPER_EMAILS}" \
+  -e DISCOURSE_SMTP_ADDRESS="${DISCOURSE_SMTP_ADDRESS}" \
+  -e DISCOURSE_SMTP_PORT="${DISCOURSE_SMTP_PORT}" \
+  -e DISCOURSE_SMTP_USER_NAME="${DISCOURSE_SMTP_USER_NAME}" \
+  -e DISCOURSE_SMTP_PASSWORD="${DISCOURSE_SMTP_PASSWORD}" \
+  -e DISCOURSE_SMTP_ENABLE_START_TLS=true \
+  --label "traefik.enable=true" \
+  --label "traefik.docker.network=traefik-proxy" \
+  --label "traefik.http.routers.discourse-secure.rule=Host(\`${DISCOURSE_HOSTNAME}\`)" \
+  --label "traefik.http.routers.discourse-secure.entrypoints=websecure" \
+  --label "traefik.http.routers.discourse-secure.tls=true" \
+  --label "traefik.http.routers.discourse-secure.tls.certresolver=letsencrypt" \
+  --label "traefik.http.services.discourse-service.loadbalancer.server.port=3000" \
+  "${DISCOURSE_IMAGE}"
 
 echo
-echo "✔️ All set! Discourse is live on HTTP port ${HTTP_PORT} and Postgres host port ${PG_HOST_PORT}:"
-echo " http://$(hostname -I | awk '{print $1}'):${HTTP_PORT}/"
+echo "✔️ All set! Discourse is being managed by Traefik."
+echo "   Access it at: https://${DISCOURSE_HOSTNAME}"
