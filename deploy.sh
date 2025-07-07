@@ -106,13 +106,10 @@ docker run -d \
   -e DISCOURSE_SMTP_ENABLE_START_TLS=true \
   --label "traefik.enable=true" \
   --label "traefik.docker.network=traefik-proxy" \
-  --label "traefik.http.routers.discourse-secure.rule=Host(\`${DISCOURSE_HOSTNAME}\`) && PathPrefix(\`${DISCOURSE_RELATIVE_URL_ROOT}\`)" \
+  --label "traefik.http.routers.discourse-secure.rule=Host(\`${DISCOURSE_HOSTNAME}\`)" \
   --label "traefik.http.routers.discourse-secure.entrypoints=websecure" \
   --label "traefik.http.routers.discourse-secure.tls=true" \
   --label "traefik.http.routers.discourse-secure.tls.certresolver=letsencrypt" \
-  --label "traefik.http.routers.discourse-secure.service=discourse-service" \
-  --label "traefik.http.middlewares.discourse-stripprefix.stripprefix.prefixes=${DISCOURSE_RELATIVE_URL_ROOT}" \
-  --label "traefik.http.routers.discourse-secure.middlewares=discourse-stripprefix" \
   --label "traefik.http.services.discourse-service.loadbalancer.server.port=3000" \
   "${DISCOURSE_IMAGE}"
 
